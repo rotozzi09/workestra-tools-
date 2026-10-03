@@ -1,0 +1,6 @@
+{
+  "name": "Workestra Tools",
+  "description": "Workestra Tools: Roda interativa dos campos harmônicos, dicionário visual de acordes, progressões de louvor e treino auditivo no círculo de quintas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

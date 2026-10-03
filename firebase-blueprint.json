@@ -1,0 +1,30 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profile & Settings",
+      "description": "User account info, preferences, and saved progressions",
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "favoriteKeys": { "type": "array", "items": { "type": "string" } },
+        "savedProgressions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "key": { "type": "string" },
+              "mode": { "type": "string" },
+              "chords": { "type": "array", "items": { "type": "string" } },
+              "createdAt": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
