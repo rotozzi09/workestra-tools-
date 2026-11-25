@@ -41,19 +41,10 @@ async function startServer() {
         try {
           const result = await vite.transformRequest("/@vite/client");
           if (result?.code) {
-            const noWsCode = result.code
-              .replace(
-                "transport.connect(createHMRHandler(handleMessage));",
-                "/* HMR WebSocket disabled */"
-              )
-              .replace(
-                "wsTransport.send(data);",
-                "/* HMR send disabled */"
-              )
-              .replace(
-                "await wsTransport.disconnect();",
-                "/* HMR disconnect disabled */"
-              );
+            const noWsCode = result.code.replace(
+              /let wsTransport = createWebSocketModuleRunnerTransport\(\{[\s\S]*?\}\);/,
+              "let wsTransport = { async connect() {}, async disconnect() {}, send() {} };"
+            );
             res.setHeader("Content-Type", "application/javascript; charset=utf-8");
             res.send(noWsCode);
             return;
