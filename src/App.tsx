@@ -335,7 +335,7 @@ function MainApp() {
               />
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <h1 className="font-display text-2xl sm:text-3xl uppercase leading-none tracking-tight text-foreground truncate">
+                  <h1 className="font-display text-xl sm:text-3xl uppercase leading-tight tracking-tight text-foreground">
                     Workestra Tools
                   </h1>
                 </div>

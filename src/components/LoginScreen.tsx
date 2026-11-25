@@ -95,7 +95,7 @@ export function LoginScreen({ theme, onToggleTheme }: Props) {
             className="size-12 sm:size-16 md:size-20 object-contain drop-shadow-md shrink-0 transition-transform hover:scale-105"
           />
           <div className="flex flex-col min-w-0 justify-center">
-            <h1 className="font-display text-2xl sm:text-4xl md:text-5xl uppercase leading-none tracking-tight text-foreground truncate">
+            <h1 className="font-display text-xl sm:text-4xl md:text-5xl uppercase leading-tight tracking-tight text-foreground">
               Workestra Tools
             </h1>
             <span className="mt-1 sm:mt-2 font-mono text-[9.5px] sm:text-xs md:text-sm uppercase tracking-wider sm:tracking-[0.18em] text-primary font-bold truncate">
