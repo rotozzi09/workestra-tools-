@@ -1,6 +1,6 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { Db, Document, MongoClient, ObjectId } from "mongodb";
-import bcrypt from "bcryptjs";
 
 export interface AuthenticatedWorkestraUser {
   id: string;
@@ -23,10 +23,79 @@ export class MongoAuthServiceError extends Error {
   }
 }
 
+export interface ApiRequest extends IncomingMessage {
+  body?: unknown;
+  query?: Record<string, unknown>;
+  params?: Record<string, string | undefined>;
+}
+
+export interface ApiResponse extends ServerResponse {
+  status?: (code: number) => ApiResponse;
+  json?: (data: unknown) => void;
+}
+
 const globalForMongo = globalThis as unknown as {
   __workestraMongoClientPromise?: Promise<MongoClient>;
   __workestraJwtFallbackSecret?: string;
 };
+
+function sendJson(res: ApiResponse, statusCode: number, data: unknown): void {
+  if (typeof res.status === "function" && typeof res.json === "function") {
+    const withStatus = res.status(statusCode);
+    if (typeof withStatus.json === "function") {
+      withStatus.json(data);
+      return;
+    }
+  }
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.end(JSON.stringify(data));
+}
+
+async function parseJsonBody(req: ApiRequest): Promise<Record<string, unknown>> {
+  if (req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) {
+    return req.body as Record<string, unknown>;
+  }
+
+  if (typeof req.body === "string") {
+    try {
+      const parsed = JSON.parse(req.body);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    const MAX_BODY_BYTES = 16 * 1024;
+
+    req.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes <= MAX_BODY_BYTES) {
+        chunks.push(chunk);
+      }
+    });
+
+    req.on("end", () => {
+      if (totalBytes > MAX_BODY_BYTES || chunks.length === 0) {
+        resolve({});
+        return;
+      }
+      try {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        const parsed = JSON.parse(raw);
+        resolve(parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {});
+      } catch {
+        resolve({});
+      }
+    });
+
+    req.on("error", () => resolve({}));
+  });
+}
 
 function getJwtSecret(): string {
   const configured =
@@ -39,44 +108,6 @@ function getJwtSecret(): string {
     globalForMongo.__workestraJwtFallbackSecret = randomBytes(32).toString("hex");
   }
   return globalForMongo.__workestraJwtFallbackSecret;
-}
-
-async function getMongoClient(): Promise<MongoClient> {
-  const rawUri = process.env.MONGODB_URI?.trim() || "";
-  const uri = rawUri.replace(/^["']|["']$/g, "").trim();
-  if (!uri) {
-    throw new MongoAuthServiceError(
-      503,
-      "MONGODB_NOT_CONFIGURED",
-      "MONGODB_URI não configurada nas variáveis de ambiente."
-    );
-  }
-
-  if (!uri.startsWith("mongodb://") && !uri.startsWith("mongodb+srv://")) {
-    throw new MongoAuthServiceError(
-      503,
-      "MONGODB_URI_INVALID",
-      "MONGODB_URI inválida (deve começar com mongodb+srv:// ou mongodb://)."
-    );
-  }
-
-  if (!globalForMongo.__workestraMongoClientPromise) {
-    try {
-      const client = new MongoClient(uri, {
-        maxPoolSize: 10,
-        serverSelectionTimeoutMS: 8000,
-      });
-      globalForMongo.__workestraMongoClientPromise = client.connect().catch((err) => {
-        globalForMongo.__workestraMongoClientPromise = undefined;
-        throw classifyMongoError(err);
-      });
-    } catch (err) {
-      globalForMongo.__workestraMongoClientPromise = undefined;
-      throw classifyMongoError(err);
-    }
-  }
-
-  return globalForMongo.__workestraMongoClientPromise;
 }
 
 function classifyMongoError(err: unknown): MongoAuthServiceError {
@@ -134,6 +165,44 @@ function classifyMongoError(err: unknown): MongoAuthServiceError {
   );
 }
 
+async function getMongoClient(): Promise<MongoClient> {
+  const rawUri = process.env.MONGODB_URI?.trim() || "";
+  const uri = rawUri.replace(/^["']|["']$/g, "").trim();
+  if (!uri) {
+    throw new MongoAuthServiceError(
+      503,
+      "MONGODB_NOT_CONFIGURED",
+      "MONGODB_URI não configurada nas variáveis de ambiente."
+    );
+  }
+
+  if (!uri.startsWith("mongodb://") && !uri.startsWith("mongodb+srv://")) {
+    throw new MongoAuthServiceError(
+      503,
+      "MONGODB_URI_INVALID",
+      "MONGODB_URI inválida (deve começar com mongodb+srv:// ou mongodb://)."
+    );
+  }
+
+  if (!globalForMongo.__workestraMongoClientPromise) {
+    try {
+      const client = new MongoClient(uri, {
+        maxPoolSize: 10,
+        serverSelectionTimeoutMS: 8000,
+      });
+      globalForMongo.__workestraMongoClientPromise = client.connect().catch((err) => {
+        globalForMongo.__workestraMongoClientPromise = undefined;
+        throw classifyMongoError(err);
+      });
+    } catch (err) {
+      globalForMongo.__workestraMongoClientPromise = undefined;
+      throw classifyMongoError(err);
+    }
+  }
+
+  return globalForMongo.__workestraMongoClientPromise;
+}
+
 async function resolveDatabase(client: MongoClient): Promise<Db> {
   const explicitDb = process.env.MONGODB_DB_NAME?.trim();
   if (explicitDb) {
@@ -141,8 +210,6 @@ async function resolveDatabase(client: MongoClient): Promise<Db> {
   }
 
   const defaultDb = client.db();
-  // If URI did not specify a database name, MongoDB driver defaults to "test".
-  // If "test" has no collections, inspect available databases and pick the app database.
   if (defaultDb.databaseName === "test") {
     try {
       const collections = await defaultDb.listCollections({}, { nameOnly: true }).toArray();
@@ -278,22 +345,21 @@ function extractPasswordHash(userDoc: Document): string | null {
 async function verifyPasswordHash(plainPassword: string, storedHash: string): Promise<boolean> {
   if (!plainPassword || !storedHash) return false;
 
-  // Standard bcrypt hashes ($2a$, $2b$, $2y$)
   if (
     storedHash.startsWith("$2a$") ||
     storedHash.startsWith("$2b$") ||
     storedHash.startsWith("$2y$")
   ) {
-    const compareFn =
-      typeof bcrypt.compare === "function"
-        ? bcrypt.compare
-        : (bcrypt as unknown as { default?: typeof bcrypt }).default?.compare;
+    const bcryptMod = (await import("bcryptjs")) as unknown as {
+      compare?: (s: string, hash: string) => Promise<boolean>;
+      default?: { compare?: (s: string, hash: string) => Promise<boolean> };
+    };
+    const compareFn = bcryptMod.compare || bcryptMod.default?.compare;
     if (typeof compareFn === "function") {
       return compareFn(plainPassword, storedHash);
     }
   }
 
-  // Node scrypt format "salt:derivedHex"
   if (storedHash.includes(":")) {
     const [salt, expectedHex] = storedHash.split(":");
     if (salt && expectedHex && /^[0-9a-f]+$/i.test(expectedHex)) {
@@ -307,7 +373,6 @@ async function verifyPasswordHash(plainPassword: string, storedHash: string): Pr
     }
   }
 
-  // SHA-256 hex digest (64 hex chars)
   if (/^[0-9a-f]{64}$/i.test(storedHash)) {
     const candidate = createHash("sha256").update(plainPassword, "utf8").digest();
     const expected = Buffer.from(storedHash, "hex");
@@ -340,7 +405,10 @@ function isUserActive(userDoc: Document): boolean {
   return true;
 }
 
-function evaluatePlanValue(rawPlan: unknown, rawIsPremium: unknown): { isPremium: boolean; planLabel: string } | null {
+function evaluatePlanValue(
+  rawPlan: unknown,
+  rawIsPremium: unknown
+): { isPremium: boolean; planLabel: string } | null {
   if (rawIsPremium === true) {
     return {
       isPremium: true,
@@ -473,15 +541,18 @@ async function resolveUserPlan(
     return directUserPlan;
   }
 
-  // Check embedded tenant object if present (e.g. userDoc.tenant = { plan: 'premium' })
-  if (userDoc.tenant && typeof userDoc.tenant === "object" && !(userDoc.tenant instanceof ObjectId) && !("_bsontype" in userDoc.tenant)) {
+  if (
+    userDoc.tenant &&
+    typeof userDoc.tenant === "object" &&
+    !(userDoc.tenant instanceof ObjectId) &&
+    !("_bsontype" in userDoc.tenant)
+  ) {
     const embeddedPlan = extractPlanFromDoc(userDoc.tenant as Record<string, unknown>);
     if (embeddedPlan) {
       return embeddedPlan;
     }
   }
 
-  // Collect all single and array tenant/organization/church/ministry IDs from userDoc
   const singleRefFields = [
     "tenantId",
     "tenant",
@@ -532,7 +603,6 @@ async function resolveUserPlan(
     "assinaturas",
   ];
 
-  // 1. Lookup by explicit reference IDs (prioritizing "tenants")
   for (const refId of rawRefs) {
     const idFilter = buildIdFilter(refId);
     for (const candidate of parentCandidates) {
@@ -548,7 +618,6 @@ async function resolveUserPlan(
     }
   }
 
-  // 2. Fallback: lookup in join collections (e.g., tenantmembers, memberships) or owner fields
   const userIds = collectObjectIdCandidates([userDoc._id, userDoc.id]);
   if (userIds.length > 0) {
     const joinCandidates = ["tenantmembers", "tenant_members", "memberships", "user_tenants", "usertenants"];
@@ -612,7 +681,7 @@ function base64UrlDecode(input: string): string {
   return Buffer.from(padded, "base64").toString("utf8");
 }
 
-export function signSessionToken(user: AuthenticatedWorkestraUser): string {
+function signSessionToken(user: AuthenticatedWorkestraUser): string {
   const header = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const now = Math.floor(Date.now() / 1000);
   const payload = base64UrlEncode(
@@ -623,7 +692,7 @@ export function signSessionToken(user: AuthenticatedWorkestraUser): string {
       plan: user.plan,
       isPremium: user.isPremium,
       iat: now,
-      exp: now + 60 * 60 * 24, // 24 hours
+      exp: now + 60 * 60 * 24,
     })
   );
 
@@ -634,7 +703,7 @@ export function signSessionToken(user: AuthenticatedWorkestraUser): string {
   return `${header}.${payload}.${base64UrlEncode(signature)}`;
 }
 
-export function verifySignedJwt(token: string): { sub: string; email?: string } {
+function verifySignedJwt(token: string): { sub: string; email?: string } {
   const parts = token.split(".");
   if (parts.length !== 3) {
     throw new MongoAuthServiceError(401, "INVALID_TOKEN", "Token inválido.");
@@ -719,7 +788,7 @@ function buildSafeUserResponse(
   };
 }
 
-export async function authenticateWithCredentials(
+async function authenticateWithCredentials(
   emailInput: unknown,
   passwordInput: unknown
 ): Promise<{ token: string; user: AuthenticatedWorkestraUser }> {
@@ -771,7 +840,7 @@ export async function authenticateWithCredentials(
   return { token, user };
 }
 
-export async function verifySessionWithMongo(
+async function verifySessionWithMongo(
   tokenInput: unknown
 ): Promise<{ token: string; user: AuthenticatedWorkestraUser }> {
   if (typeof tokenInput !== "string" || !tokenInput.trim()) {
@@ -802,4 +871,71 @@ export async function verifySessionWithMongo(
   const refreshedToken = signSessionToken(user);
 
   return { token: refreshedToken, user };
+}
+
+function resolveAction(req: ApiRequest): string {
+  const paramAction = req.params?.action || req.query?.action;
+  if (typeof paramAction === "string" && paramAction.trim()) {
+    return paramAction.trim().toLowerCase();
+  }
+  const urlPath = (req.url || "").split("?")[0].replace(/\/+$/, "");
+  const segments = urlPath.split("/").filter(Boolean);
+  return (segments[segments.length - 1] || "").toLowerCase();
+}
+
+export default async function handler(req: ApiRequest, res: ApiResponse) {
+  try {
+    const action = resolveAction(req);
+
+    if (action === "health" && req.method === "GET") {
+      return sendJson(res, 200, {
+        ok: true,
+        mongoConfigured: Boolean(process.env.MONGODB_URI?.trim()),
+      });
+    }
+
+    if (req.method !== "POST") {
+      res.setHeader("Allow", "POST");
+      return sendJson(res, 405, { error: "Método não permitido." });
+    }
+
+    if (action === "login") {
+      const body = await parseJsonBody(req);
+      const result = await authenticateWithCredentials(body.email, body.password);
+      return sendJson(res, 200, result);
+    }
+
+    if (action === "verify") {
+      const authHeader = req.headers.authorization;
+      const bearerToken =
+        typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+          ? authHeader.slice(7).trim()
+          : "";
+      const body = await parseJsonBody(req);
+      const token = bearerToken || body.token;
+      const result = await verifySessionWithMongo(token);
+      return sendJson(res, 200, result);
+    }
+
+    if (action === "logout") {
+      return sendJson(res, 200, { ok: true });
+    }
+
+    return sendJson(res, 404, { error: "Rota não encontrada." });
+  } catch (err) {
+    const classified =
+      err instanceof MongoAuthServiceError ? err : classifyMongoError(err);
+    if (classified.code !== "DB_ERROR" || err instanceof MongoAuthServiceError) {
+      return sendJson(res, classified.status, {
+        error: classified.message,
+        code: classified.code,
+      });
+    }
+    const errName = err instanceof Error ? err.name : "Error";
+    console.error("[Workestra Auth] Error:", err instanceof Error ? err.message : "unknown");
+    return sendJson(res, 500, {
+      error: `Erro interno ao autenticar (${errName}).`,
+      code: "DB_ERROR",
+    });
+  }
 }
