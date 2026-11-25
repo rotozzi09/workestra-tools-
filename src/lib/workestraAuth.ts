@@ -30,7 +30,8 @@ export class WorkestraAuthError extends Error {
 export function getWorkestraApiBaseUrl(): string {
   const raw = (import.meta.env.VITE_WORKESTRA_API_URL as string | undefined)?.trim() || "";
   if (!raw) {
-    throw new WorkestraAuthError("API_NOT_CONFIGURED");
+    // Use built-in same-origin Vercel / Express API routes (/api/tools/*)
+    return "";
   }
 
   let parsed: URL;
@@ -156,6 +157,13 @@ export async function loginWithWorkestra(
     );
   }
 
+  if (response.status === 503) {
+    throw new WorkestraAuthError(
+      "API_NOT_CONFIGURED",
+      typeof payload.error === "string" ? payload.error : undefined
+    );
+  }
+
   if (!response.ok) {
     throw new WorkestraAuthError(
       "UNKNOWN_ERROR",
@@ -220,6 +228,13 @@ export async function verifyWorkestraToken(
   if (response.status === 403) {
     throw new WorkestraAuthError(
       "PREMIUM_REQUIRED",
+      typeof payload.error === "string" ? payload.error : undefined
+    );
+  }
+
+  if (response.status === 503) {
+    throw new WorkestraAuthError(
+      "API_NOT_CONFIGURED",
       typeof payload.error === "string" ? payload.error : undefined
     );
   }
