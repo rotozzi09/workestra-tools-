@@ -303,7 +303,89 @@ function evaluatePlanValue(rawPlan: unknown, rawIsPremium: unknown): { isPremium
   return { isPremium, planLabel: label };
 }
 
-async function resolveUserPlan(db: Db, userDoc: Document): Promise<{ isPremium: boolean; planLabel: string; ministryName?: string }> {
+function buildIdFilter(refId: unknown): Record<string, unknown> {
+  const asString =
+    typeof refId === "string"
+      ? refId.trim()
+      : refId && typeof (refId as { toString?: () => string }).toString === "function"
+      ? String(refId).trim()
+      : "";
+
+  if (asString && ObjectId.isValid(asString)) {
+    return {
+      $or: [
+        { _id: new ObjectId(asString) },
+        { _id: asString as unknown as ObjectId },
+      ],
+    };
+  }
+  return { _id: refId as ObjectId };
+}
+
+function collectObjectIdCandidates(values: unknown[]): (ObjectId | string)[] {
+  const ids: (ObjectId | string)[] = [];
+  for (const val of values) {
+    if (!val) continue;
+    const str = String(val).trim();
+    if (!str) continue;
+    ids.push(str);
+    if (ObjectId.isValid(str)) {
+      ids.push(new ObjectId(str));
+    }
+  }
+  return ids;
+}
+
+function extractPlanFromDoc(
+  doc: Record<string, unknown>
+): { isPremium: boolean; planLabel: string; ministryName?: string } | null {
+  const ministryName =
+    typeof (doc.name || doc.nome) === "string"
+      ? String(doc.name || doc.nome).trim()
+      : undefined;
+
+  const docStatus = String(doc.status ?? "").trim().toLowerCase();
+  if (
+    docStatus === "inactive" ||
+    docStatus === "inativo" ||
+    docStatus === "suspended" ||
+    docStatus === "suspenso" ||
+    docStatus === "canceled" ||
+    docStatus === "cancelado"
+  ) {
+    return { isPremium: false, planLabel: "Inativo", ministryName };
+  }
+
+  const candidates = [
+    doc.plano,
+    doc.plan,
+    doc.subscriptionPlan,
+    doc.tipoPlano,
+    doc.tier,
+    getNestedValue(doc, "subscription.plan"),
+    getNestedValue(doc, "subscription.plano"),
+    getNestedValue(doc, "assinatura.plano"),
+    getNestedValue(doc, "assinatura.plan"),
+  ];
+
+  for (const candidate of candidates) {
+    const evaluated = evaluatePlanValue(candidate, doc.isPremium ?? doc.premium);
+    if (evaluated) {
+      return { ...evaluated, ministryName };
+    }
+  }
+
+  if (doc.isPremium === true || doc.premium === true) {
+    return { isPremium: true, planLabel: "Plano Premium", ministryName };
+  }
+
+  return null;
+}
+
+async function resolveUserPlan(
+  db: Db,
+  userDoc: Document
+): Promise<{ isPremium: boolean; planLabel: string; ministryName?: string }> {
   const configuredField = process.env.MONGODB_PLAN_FIELD?.trim();
   if (configuredField) {
     const directCustom = evaluatePlanValue(
@@ -315,103 +397,132 @@ async function resolveUserPlan(db: Db, userDoc: Document): Promise<{ isPremium: 
     }
   }
 
-  const directCandidates = [
-    userDoc.plano,
-    userDoc.plan,
-    userDoc.subscriptionPlan,
-    userDoc.tipoPlano,
-    userDoc.nivel,
-    getNestedValue(userDoc, "subscription.plan"),
-    getNestedValue(userDoc, "subscription.plano"),
-    getNestedValue(userDoc, "assinatura.plano"),
-    getNestedValue(userDoc, "assinatura.plan"),
-  ];
+  const directUserPlan = extractPlanFromDoc(userDoc);
+  if (directUserPlan && directUserPlan.isPremium) {
+    return directUserPlan;
+  }
 
-  for (const candidate of directCandidates) {
-    const evaluated = evaluatePlanValue(candidate, userDoc.isPremium ?? userDoc.premium);
-    if (evaluated) {
-      return evaluated;
+  // Check embedded tenant object if present (e.g. userDoc.tenant = { plan: 'premium' })
+  if (userDoc.tenant && typeof userDoc.tenant === "object" && !(userDoc.tenant instanceof ObjectId) && !("_bsontype" in userDoc.tenant)) {
+    const embeddedPlan = extractPlanFromDoc(userDoc.tenant as Record<string, unknown>);
+    if (embeddedPlan) {
+      return embeddedPlan;
     }
   }
 
-  if (userDoc.isPremium === true || userDoc.premium === true) {
-    return { isPremium: true, planLabel: "Plano Premium" };
-  }
-
-  // Fallback: check linked organization / ministry / church / client document if present
-  const refFields = [
+  // Collect all single and array tenant/organization/church/ministry IDs from userDoc
+  const singleRefFields = [
+    "tenantId",
+    "tenant",
     "ministryId",
     "ministerioId",
     "churchId",
     "igrejaId",
     "organizationId",
     "orgId",
-    "tenantId",
     "clientId",
     "clienteId",
     "empresaId",
     "accountId",
   ];
+  const arrayRefFields = ["tenantIds", "tenants", "organizationIds", "ministryIds", "churchIds"];
 
-  let refId: unknown = null;
-  for (const rf of refFields) {
-    if (userDoc[rf]) {
-      refId = userDoc[rf];
-      break;
+  const rawRefs: unknown[] = [];
+  for (const rf of singleRefFields) {
+    if (userDoc[rf]) rawRefs.push(userDoc[rf]);
+  }
+  for (const af of arrayRefFields) {
+    const arr = userDoc[af];
+    if (Array.isArray(arr)) {
+      for (const item of arr) {
+        if (item && typeof item === "object" && !("_bsontype" in item) && "tenantId" in item) {
+          rawRefs.push((item as Record<string, unknown>).tenantId);
+        } else {
+          rawRefs.push(item);
+        }
+      }
     }
   }
 
-  if (refId) {
-    const existing = await db.listCollections({}, { nameOnly: true }).toArray();
-    const colNames = existing.map((c) => c.name);
-    const parentCandidates = [
-      "ministries",
-      "ministerios",
-      "churches",
-      "igrejas",
-      "organizations",
-      "tenants",
-      "clients",
-      "clientes",
-      "empresas",
-      "accounts",
-      "subscriptions",
-      "assinaturas",
-    ];
+  const existing = await db.listCollections({}, { nameOnly: true }).toArray();
+  const colNames = existing.map((c) => c.name);
+  const parentCandidates = [
+    "tenants",
+    "ministries",
+    "ministerios",
+    "churches",
+    "igrejas",
+    "organizations",
+    "clients",
+    "clientes",
+    "empresas",
+    "accounts",
+    "subscriptions",
+    "assinaturas",
+  ];
 
-    const idFilter =
-      refId instanceof ObjectId
-        ? { _id: refId }
-        : typeof refId === "string" && ObjectId.isValid(refId)
-        ? { $or: [{ _id: new ObjectId(refId) }, { _id: refId as unknown as ObjectId }] }
-        : { _id: refId as ObjectId };
-
+  // 1. Lookup by explicit reference IDs (prioritizing "tenants")
+  for (const refId of rawRefs) {
+    const idFilter = buildIdFilter(refId);
     for (const candidate of parentCandidates) {
       const colName = colNames.find((n) => n.toLowerCase() === candidate);
       if (!colName) continue;
       const parentDoc = await db.collection(colName).findOne(idFilter);
       if (!parentDoc) continue;
 
-      const ministryName =
-        typeof (parentDoc.name || parentDoc.nome) === "string"
-          ? String(parentDoc.name || parentDoc.nome)
-          : undefined;
+      const evaluated = extractPlanFromDoc(parentDoc);
+      if (evaluated?.isPremium) {
+        return evaluated;
+      }
+    }
+  }
 
-      const parentPlanCandidates = [
-        parentDoc.plano,
-        parentDoc.plan,
-        parentDoc.subscriptionPlan,
-        getNestedValue(parentDoc, "subscription.plan"),
-        getNestedValue(parentDoc, "assinatura.plano"),
-      ];
-
-      for (const pCandidate of parentPlanCandidates) {
-        const evaluated = evaluatePlanValue(pCandidate, parentDoc.isPremium ?? parentDoc.premium);
-        if (evaluated) {
-          return { ...evaluated, ministryName };
+  // 2. Fallback: lookup in join collections (e.g., tenantmembers, memberships) or owner fields
+  const userIds = collectObjectIdCandidates([userDoc._id, userDoc.id]);
+  if (userIds.length > 0) {
+    const joinCandidates = ["tenantmembers", "tenant_members", "memberships", "user_tenants", "usertenants"];
+    for (const joinCand of joinCandidates) {
+      const joinCol = colNames.find((n) => n.toLowerCase() === joinCand);
+      if (!joinCol) continue;
+      const memberships = await db
+        .collection(joinCol)
+        .find({ $or: [{ userId: { $in: userIds } }, { memberId: { $in: userIds } }] })
+        .limit(10)
+        .toArray();
+      const memberTenantRefs = memberships.map((m) => m.tenantId || m.organizationId || m.churchId).filter(Boolean);
+      for (const tRef of memberTenantRefs) {
+        const tenantsCol = colNames.find((n) => n.toLowerCase() === "tenants");
+        if (!tenantsCol) continue;
+        const parentDoc = await db.collection(tenantsCol).findOne(buildIdFilter(tRef));
+        if (!parentDoc) continue;
+        const evaluated = extractPlanFromDoc(parentDoc);
+        if (evaluated?.isPremium) {
+          return evaluated;
         }
       }
     }
+
+    const tenantsCol = colNames.find((n) => n.toLowerCase() === "tenants");
+    if (tenantsCol) {
+      const ownedTenant = await db.collection(tenantsCol).findOne({
+        $or: [
+          { ownerId: { $in: userIds } },
+          { adminId: { $in: userIds } },
+          { createdBy: { $in: userIds } },
+          { userId: { $in: userIds } },
+        ],
+      });
+      if (ownedTenant) {
+        const evaluated = extractPlanFromDoc(ownedTenant);
+        if (evaluated?.isPremium) {
+          return evaluated;
+        }
+      }
+    }
+  }
+
+  if (directUserPlan) {
+    return directUserPlan;
   }
 
   return { isPremium: false, planLabel: "Sem Plano Premium" };
