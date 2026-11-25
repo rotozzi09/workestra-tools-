@@ -23,8 +23,23 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<WorkestraUser | null>(null);
-  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [user, setUser] = useState<WorkestraUser | null>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = localStorage.getItem("workestra_user_cache");
+        if (cached) return JSON.parse(cached);
+      } catch {
+        // ignore
+      }
+    }
+    return null;
+  });
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("workestra_auth_token");
+    }
+    return null;
+  });
   const [loading, setLoading] = useState(true);
   const [ssoError, setSsoError] = useState<WorkestraAuthError | null>(null);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
@@ -32,7 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
 
-    async function checkSsoLogin() {
+    async function restoreSession() {
       if (typeof window === "undefined") {
         if (active) setLoading(false);
         return;
@@ -40,44 +55,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const params = new URLSearchParams(window.location.search);
       const ssoToken = params.get("sso") || params.get("token");
+      const storedToken = localStorage.getItem("workestra_auth_token");
+      const tokenToVerify = ssoToken || storedToken;
 
-      if (!ssoToken) {
+      if (!tokenToVerify) {
         if (active) setLoading(false);
         return;
       }
 
-      // Remove token from address bar without reloading
-      params.delete("sso");
-      params.delete("token");
-      const remainingQuery = params.toString();
-      const cleanUrl =
-        window.location.pathname +
-        (remainingQuery ? `?${remainingQuery}` : "") +
-        window.location.hash;
-      window.history.replaceState({}, "", cleanUrl);
+      if (ssoToken) {
+        // Remove token from address bar without reloading
+        params.delete("sso");
+        params.delete("token");
+        const remainingQuery = params.toString();
+        const cleanUrl =
+          window.location.pathname +
+          (remainingQuery ? `?${remainingQuery}` : "") +
+          window.location.hash;
+        window.history.replaceState({}, "", cleanUrl);
+      }
 
       try {
-        const session = await verifyWorkestraToken(ssoToken);
+        const session = await verifyWorkestraToken(tokenToVerify);
         if (!active) return;
         setUser(session.user);
         setAuthToken(session.token);
+        localStorage.setItem("workestra_auth_token", session.token);
+        localStorage.setItem("workestra_user_cache", JSON.stringify(session.user));
         setSsoError(null);
         setIsLoginModalOpen(false);
       } catch (err) {
         if (!active) return;
         setUser(null);
         setAuthToken(null);
-        if (err instanceof WorkestraAuthError) {
-          setSsoError(err);
-        } else {
-          setSsoError(new WorkestraAuthError("INVALID_TOKEN"));
+        localStorage.removeItem("workestra_auth_token");
+        localStorage.removeItem("workestra_user_cache");
+        if (ssoToken) {
+          if (err instanceof WorkestraAuthError) {
+            setSsoError(err);
+          } else {
+            setSsoError(new WorkestraAuthError("INVALID_TOKEN"));
+          }
         }
       } finally {
         if (active) setLoading(false);
       }
     }
 
-    checkSsoLogin();
+    restoreSession();
 
     return () => {
       active = false;
@@ -89,6 +114,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const session = await loginWithWorkestra(email, password);
     setUser(session.user);
     setAuthToken(session.token);
+    localStorage.setItem("workestra_auth_token", session.token);
+    localStorage.setItem("workestra_user_cache", JSON.stringify(session.user));
     setIsLoginModalOpen(false);
   }, []);
 
@@ -97,6 +124,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setAuthToken(null);
     setSsoError(null);
+    localStorage.removeItem("workestra_auth_token");
+    localStorage.removeItem("workestra_user_cache");
     await logoutWorkestra(currentToken);
   }, [authToken]);
 
