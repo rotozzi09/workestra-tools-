@@ -742,6 +742,18 @@ export function playChord(midis: number[], instrument: Instrument = "piano") {
   }
 }
 
+export function playArpeggio(midis: number[], instrument: Instrument = "piano", speedMs = 110) {
+  try {
+    midis.forEach((m, i) => {
+      setTimeout(() => {
+        playChord([m], instrument);
+      }, i * speedMs);
+    });
+  } catch {
+    // Audio unavailable
+  }
+}
+
 /** Crisp wooden metronome click with configurable volume */
 export function playMetronomeClick(isDownbeat: boolean, volumeOverride?: number) {
   try {

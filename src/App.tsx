@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { ChevronLeft, ChevronRight, Volume2, VolumeX, Music, Layers, Sun, Moon, GraduationCap, Sliders, Mic, HelpCircle } from "lucide-react";
+import { ChevronLeft, ChevronRight, Volume2, VolumeX, Music, Layers, Sun, Moon, GraduationCap, Sliders, Mic, HelpCircle, Sparkles } from "lucide-react";
 import workestraLogo from "./assets/workestra-logo.png";
 import { HarmonicWheel } from "./components/HarmonicWheel";
 import { ProgressionPlayer } from "./components/ProgressionPlayer";
@@ -147,6 +147,53 @@ function MainApp() {
   const [playingDegreeIndex, setPlayingDegreeIndex] = useState<number | null>(null);
   const [playingBeat, setPlayingBeat] = useState<number | null>(null);
   const [inversionsMap, setInversionsMap] = useState<Record<number, number>>({});
+  const [stageMode, setStageMode] = useState<boolean>(false);
+
+  const prevKey = useRef<string | null>(null);
+  const fieldData = getActiveHarmonicField(index, mode, chordType, language);
+  const allFieldChordNames = useMemo(
+    () => fieldData.chords.map((c) => c.chord),
+    [fieldData]
+  );
+
+  // Keyboard shortcuts (Arrow keys for key rotation, Space for tonic chord, S for study mode, M for major/minor, P for stage mode)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          activeEl.tagName === "SELECT")
+      ) {
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        handleKeyChange(index - 1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        handleKeyChange(index + 1);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        if (soundOn) {
+          const tonicChord = fieldData.chords[0];
+          if (tonicChord) playChord(tonicChord.notes, instrument);
+        }
+      } else if (e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        setStudyMode((v) => !v);
+      } else if (e.key.toLowerCase() === "m") {
+        e.preventDefault();
+        handleModeChange(mode === "major" ? "minor" : "major");
+      } else if (e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        setStageMode((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [index, mode, soundOn, fieldData, instrument]);
 
   // Theme state: "light" | "dark"
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -160,24 +207,17 @@ function MainApp() {
 
   useEffect(() => {
     const root = document.documentElement;
-    if (theme === "dark") {
+    if (theme === "dark" || stageMode) {
       root.classList.add("dark");
     } else {
       root.classList.remove("dark");
     }
     localStorage.setItem("harmonic-wheel-theme", theme);
-  }, [theme]);
+  }, [theme, stageMode]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   };
-
-  const prevKey = useRef<string | null>(null);
-  const fieldData = getActiveHarmonicField(index, mode, chordType, language);
-  const allFieldChordNames = useMemo(
-    () => fieldData.chords.map((c) => c.chord),
-    [fieldData]
-  );
 
   useEffect(() => {
     const currentKey = `${index}-${mode}-${chordType}`;
@@ -275,8 +315,12 @@ function MainApp() {
   }
 
   return (
-    <main className="relative flex min-h-screen w-full max-w-full overflow-x-hidden flex-col items-center bg-background font-sans text-foreground">
-      <div className="flex w-full max-w-md flex-col items-center px-3 pb-12 pt-5">
+    <main
+      className={`relative flex min-h-screen w-full max-w-full overflow-x-hidden flex-col items-center bg-background font-sans text-foreground transition-colors duration-200 ${
+        stageMode ? "ring-8 ring-amber-500/20 bg-zinc-950 text-white" : ""
+      }`}
+    >
+      <div className="flex w-full max-w-6xl flex-col items-center px-3 sm:px-6 pb-16 pt-5">
         {/* Header: Workestra Tools Brand Logo, Title & Subtitle + User Profile Button */}
         <header className="flex w-full flex-col gap-3 animate-[slide-up_0.6s_var(--ease-out-expo)_both]">
           <div className="flex items-center justify-between gap-3 w-full">
@@ -337,6 +381,18 @@ function MainApp() {
                   className="flex size-7 items-center justify-center rounded-full transition-transform active:scale-95 cursor-pointer hover:bg-muted text-foreground"
                 >
                   <HelpCircle className="size-3.5 text-amber-500 hover:text-amber-400 transition-colors" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setStageMode((v) => !v)}
+                  aria-label={stageMode ? "Desativar Modo Palco" : "Ativar Modo Palco (Alto Contraste)"}
+                  title={stageMode ? "Desativar Modo Palco" : "Ativar Modo Palco (Alto Contraste para Culto/Palco - Atalho: P)"}
+                  className={`flex size-7 items-center justify-center rounded-full transition-transform active:scale-95 cursor-pointer hover:bg-muted ${
+                    stageMode ? "bg-amber-500 text-black font-bold" : "text-foreground"
+                  }`}
+                >
+                  <Sparkles className="size-3.5" />
                 </button>
 
                 <button
