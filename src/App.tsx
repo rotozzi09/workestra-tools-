@@ -301,7 +301,7 @@ function MainApp() {
               </div>
             </div>
 
-            {/* Google Login / User Profile Button & System Icons underneath */}
+            {/* Workestra User Profile Button & System Icons underneath */}
             <div className="flex flex-col items-end gap-1.5 shrink-0">
               <UserAuthButton />
               <div className="flex items-center gap-1 bg-card/80 p-1 rounded-full border border-border shadow-xs">
@@ -879,7 +879,7 @@ function MainApp() {
           onMetronomeVolumeChange={handleMetronomeVolumeChange}
         />
 
-        {/* Google Authentication Modal */}
+        {/* Workestra Authentication Modal */}
         <LoginModal />
       </div>
     </main>

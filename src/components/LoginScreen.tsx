@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useLanguage } from "../contexts/LanguageContext";
+import { WorkestraAuthError, WorkestraAuthErrorCode } from "../lib/workestraAuth";
 import workestraLogo from "../assets/workestra-logo.png";
 import {
   Sparkles,
@@ -10,6 +11,12 @@ import {
   Sun,
   Moon,
   Volume2,
+  Mail,
+  Lock,
+  Eye,
+  EyeOff,
+  Crown,
+  LogIn,
 } from "lucide-react";
 
 interface Props {
@@ -17,26 +24,55 @@ interface Props {
   onToggleTheme: () => void;
 }
 
+function getAuthErrorMessage(
+  code: WorkestraAuthErrorCode,
+  t: ReturnType<typeof useLanguage>["t"]
+): string {
+  switch (code) {
+    case "INVALID_CREDENTIALS":
+      return t("errInvalidCredentials");
+    case "PREMIUM_REQUIRED":
+      return t("errPremiumRequired");
+    case "INVALID_TOKEN":
+      return t("errInvalidToken");
+    case "API_NOT_CONFIGURED":
+    case "INVALID_API_URL":
+      return t("errApiNotConfigured");
+    case "NETWORK_ERROR":
+      return t("errNetwork");
+    default:
+      return t("errUnknown");
+  }
+}
+
 export function LoginScreen({ theme, onToggleTheme }: Props) {
-  const { signInWithGoogle } = useAuth();
+  const { signInWithWorkestra, ssoError, clearSsoError } = useAuth();
   const { t } = useLanguage();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const handleGoogleLogin = async () => {
+  useEffect(() => {
+    if (ssoError) {
+      setErrorMsg(getAuthErrorMessage(ssoError.code, t));
+    }
+  }, [ssoError, t]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+    clearSsoError();
+
     try {
-      await signInWithGoogle();
-    } catch (err: any) {
-      if (err?.code === "auth/popup-closed-by-user") {
-        setErrorMsg("O login foi cancelado na janela do Google.");
-      } else if (err?.code === "auth/popup-blocked") {
-        setErrorMsg("O pop-up foi bloqueado pelo navegador. Permita pop-ups para fazer login.");
-      } else if (err?.code === "auth/unauthorized-domain") {
-        setErrorMsg(`Domínio não autorizado (${window.location.hostname}). Adicione este domínio na aba 'Authentication > Configurações > Domínios autorizados' no Firebase Console.`);
+      await signInWithWorkestra(email, password);
+    } catch (err) {
+      if (err instanceof WorkestraAuthError) {
+        setErrorMsg(getAuthErrorMessage(err.code, t));
       } else {
-        setErrorMsg(`Erro de login (${err?.code || err?.message || 'desconhecido'}). Verifique se o domínio Vercel está autorizado no Firebase.`);
+        setErrorMsg(t("errUnknown"));
       }
     } finally {
       setIsSubmitting(false);
@@ -97,7 +133,7 @@ export function LoginScreen({ theme, onToggleTheme }: Props) {
             {t("heroSub")}
           </p>
 
-          {/* Interactive Feature Pills */}
+          {/* Feature Highlights */}
           <div className="grid grid-cols-2 gap-2.5 text-left mb-6">
             <div className="p-3 rounded-xl bg-card border border-border/70 shadow-xs flex items-start gap-2.5">
               <Compass className="w-4 h-4 text-primary shrink-0 mt-0.5" />
@@ -133,10 +169,10 @@ export function LoginScreen({ theme, onToggleTheme }: Props) {
           </div>
         </div>
 
-        {/* Right Column: Sign In Card */}
+        {/* Right Column: Workestra Database Sign In Card */}
         <div className="w-full max-w-sm rounded-2xl bg-card border-2 border-border p-6 sm:p-8 shadow-xl text-card-foreground">
-          <div className="text-center mb-6">
-            <div className="inline-flex items-center justify-center size-16 rounded-2xl bg-card border border-border/80 p-1 mb-3 shadow-xs">
+          <div className="text-center mb-5">
+            <div className="inline-flex items-center justify-center size-14 rounded-2xl bg-card border border-border/80 p-1 mb-3 shadow-xs">
               <img
                 src={workestraLogo}
                 alt="Workestra Tools"
@@ -145,6 +181,12 @@ export function LoginScreen({ theme, onToggleTheme }: Props) {
                 className="size-full object-contain drop-shadow-xs"
               />
             </div>
+
+            <div className="flex items-center justify-center gap-1.5 text-[11px] font-mono font-bold uppercase tracking-wider text-amber-500 mb-1">
+              <Crown className="w-3.5 h-3.5" />
+              <span>{t("premiumOnlyBadge")}</span>
+            </div>
+
             <h3 className="text-xl font-bold text-foreground">{t("welcomeTitle")}</h3>
             <p className="text-xs text-muted-foreground mt-1">
               {t("connectAccount")}
@@ -153,46 +195,92 @@ export function LoginScreen({ theme, onToggleTheme }: Props) {
 
           {/* Error Message */}
           {errorMsg && (
-            <div className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs font-medium leading-tight text-center">
+            <div className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs font-medium leading-snug text-center">
               {errorMsg}
             </div>
           )}
 
-          {/* Google Sign-in Button */}
-          <button
-            type="button"
-            onClick={handleGoogleLogin}
-            disabled={isSubmitting}
-            className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl font-semibold text-sm border-2 border-border shadow-sm bg-card hover:bg-muted/60 active:scale-[0.98] transition-all duration-150 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed group"
-          >
-            {isSubmitting ? (
-              <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
-                <path
-                  fill="#4285F4"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+          {/* Workestra Email + Password Form */}
+          <form onSubmit={handleSubmit} className="space-y-3.5">
+            <div>
+              <label
+                htmlFor="workestra-login-email"
+                className="block text-xs font-semibold text-foreground mb-1.5"
+              >
+                {t("emailLabel")}
+              </label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  id="workestra-login-email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder={t("emailPlaceholder")}
+                  disabled={isSubmitting}
+                  className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-border bg-background text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all disabled:opacity-60"
                 />
-                <path
-                  fill="#34A853"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                />
-              </svg>
-            )}
-            <span className="text-foreground group-hover:text-primary transition-colors">
-              {isSubmitting ? t("connecting") : t("loginWithGoogle")}
-            </span>
-          </button>
+              </div>
+            </div>
 
-          <div className="flex items-center justify-center gap-3 mt-6 text-[11px] text-muted-foreground/80 font-mono">
+            <div>
+              <label
+                htmlFor="workestra-login-password"
+                className="block text-xs font-semibold text-foreground mb-1.5"
+              >
+                {t("passwordLabel")}
+              </label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  id="workestra-login-password"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={t("passwordPlaceholder")}
+                  disabled={isSubmitting}
+                  className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-border bg-background text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all disabled:opacity-60"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                >
+                  {showPassword ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl font-semibold text-sm bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] shadow-sm transition-all duration-150 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed mt-2"
+            >
+              {isSubmitting ? (
+                <div className="w-4 h-4 border-2 border-primary-foreground border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <LogIn className="w-4 h-4 shrink-0" />
+              )}
+              <span>
+                {isSubmitting ? t("connecting") : t("submitLogin")}
+              </span>
+            </button>
+          </form>
+
+          <p className="mt-4 text-[11px] text-muted-foreground text-center leading-relaxed">
+            {t("premiumAccessNote")}
+          </p>
+
+          <div className="flex items-center justify-center gap-3 mt-5 pt-4 border-t border-border/50 text-[11px] text-muted-foreground/80 font-mono">
             <a
               href="/privacidade.html"
               target="_blank"

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useLanguage } from "../contexts/LanguageContext";
-import { LogIn, LogOut, User as UserIcon, ChevronDown, CheckCircle2 } from "lucide-react";
+import { LogIn, LogOut, User as UserIcon, ChevronDown, Crown } from "lucide-react";
 
 export function UserAuthButton() {
   const { user, loading, openLoginModal, logOut } = useAuth();
@@ -34,7 +34,7 @@ export function UserAuthButton() {
         className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 shadow-xs active:scale-95 transition-all cursor-pointer"
       >
         <LogIn className="w-3.5 h-3.5" />
-        <span>{t("loginWithGoogle")}</span>
+        <span>{t("loginWithWorkestra")}</span>
       </button>
     );
   }
@@ -74,9 +74,9 @@ export function UserAuthButton() {
             <p className="text-[11px] font-mono text-muted-foreground truncate">
               {user.email}
             </p>
-            <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-              <CheckCircle2 className="w-3 h-3" />
-              <span>{t("connectedViaGoogle")}</span>
+            <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-amber-600 dark:text-amber-400 font-semibold">
+              <Crown className="w-3 h-3 shrink-0" />
+              <span>{t("connectedViaWorkestra")}</span>
             </div>
           </div>
 
