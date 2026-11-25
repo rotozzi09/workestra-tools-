@@ -110,24 +110,16 @@ function getJwtSecret(): string {
   return globalForMongo.__workestraJwtFallbackSecret;
 }
 
+function redactMongoCredentials(text: string): string {
+  return text.replace(/mongodb(\+srv)?:\/\/[^@\s]+@/gi, "mongodb$1://***:***@");
+}
+
 function classifyMongoError(err: unknown): MongoAuthServiceError {
   if (err instanceof MongoAuthServiceError) return err;
   const msg = err instanceof Error ? err.message : String(err);
   const name = err instanceof Error ? err.name : "";
   const lower = msg.toLowerCase();
-
-  if (
-    name.includes("ParseError") ||
-    lower.includes("unescaped") ||
-    lower.includes("invalid connection string") ||
-    lower.includes("uri")
-  ) {
-    return new MongoAuthServiceError(
-      503,
-      "MONGODB_URI_INVALID",
-      "Formato da MONGODB_URI inválido (se a senha tiver símbolos como @ ou :, codifique ou use apenas letras/números)."
-    );
-  }
+  const safeDetail = redactMongoCredentials(msg).slice(0, 120);
 
   if (
     lower.includes("bad auth") ||
@@ -144,17 +136,34 @@ function classifyMongoError(err: unknown): MongoAuthServiceError {
   if (
     name.includes("ServerSelection") ||
     name.includes("Network") ||
+    name.includes("Topology") ||
     lower.includes("timed out") ||
     lower.includes("etimedout") ||
     lower.includes("enotfound") ||
     lower.includes("econnrefused") ||
+    lower.includes("econnreset") ||
     lower.includes("ssl") ||
     lower.includes("tls")
   ) {
     return new MongoAuthServiceError(
       502,
       "MONGODB_NETWORK_ERROR",
-      "Não foi possível alcançar o MongoDB Atlas (verifique se 0.0.0.0/0 está liberado em Network Access)."
+      `Não foi possível alcançar o MongoDB Atlas (verifique se 0.0.0.0/0 está liberado em Network Access) [${name || "NetworkError"}].`
+    );
+  }
+
+  if (
+    name.includes("ParseError") ||
+    lower.includes("unescaped") ||
+    lower.includes("invalid connection string") ||
+    lower.includes("invalid scheme") ||
+    lower.includes("connection string") ||
+    /\buri\b/.test(lower)
+  ) {
+    return new MongoAuthServiceError(
+      503,
+      "MONGODB_URI_INVALID",
+      `Formato da MONGODB_URI inválido (${name || "ParseError"}: ${safeDetail}).`
     );
   }
 
@@ -165,10 +174,18 @@ function classifyMongoError(err: unknown): MongoAuthServiceError {
   );
 }
 
-async function getMongoClient(): Promise<MongoClient> {
-  const rawUri = process.env.MONGODB_URI?.trim() || "";
-  const uri = rawUri.replace(/^["']|["']$/g, "").trim();
-  if (!uri) {
+function encodeUserInfoPartIfNeeded(value: string): string {
+  const hasInvalidRawChars = /[@:/?#\[\]\s<>^`"{}|\\]/.test(value);
+  const hasInvalidPercent = /%(?![0-9a-fA-F]{2})/.test(value);
+  if (hasInvalidRawChars || hasInvalidPercent) {
+    return encodeURIComponent(value);
+  }
+  return value;
+}
+
+function normalizeMongoUri(rawEnvValue: string): string {
+  const stripped = rawEnvValue.replace(/^["']|["']$/g, "").trim();
+  if (!stripped) {
     throw new MongoAuthServiceError(
       503,
       "MONGODB_NOT_CONFIGURED",
@@ -176,13 +193,52 @@ async function getMongoClient(): Promise<MongoClient> {
     );
   }
 
-  if (!uri.startsWith("mongodb://") && !uri.startsWith("mongodb+srv://")) {
+  const schemeMatch = /^(mongodb(?:\+srv)?:\/\/)(.+)$/i.exec(stripped);
+  if (!schemeMatch) {
     throw new MongoAuthServiceError(
       503,
       "MONGODB_URI_INVALID",
-      "MONGODB_URI inválida (deve começar com mongodb+srv:// ou mongodb://)."
+      "MONGODB_URI inválida: deve começar com mongodb+srv:// ou mongodb://."
     );
   }
+
+  const scheme = schemeMatch[1];
+  const rest = schemeMatch[2];
+  const atIndex = rest.lastIndexOf("@");
+  if (atIndex === -1) {
+    return stripped;
+  }
+
+  const userInfo = rest.slice(0, atIndex);
+  const hostAndPath = rest.slice(atIndex + 1);
+  const colonIndex = userInfo.indexOf(":");
+  if (colonIndex === -1) {
+    return stripped;
+  }
+
+  const rawUser = userInfo.slice(0, colonIndex);
+  const rawPass = userInfo.slice(colonIndex + 1);
+
+  if (
+    rawPass === "<db_password>" ||
+    rawPass === "<password>" ||
+    /^<[^>]+>$/.test(rawPass)
+  ) {
+    throw new MongoAuthServiceError(
+      503,
+      "MONGODB_URI_INVALID",
+      "Substitua <db_password> pela sua senha real do banco na variável MONGODB_URI da Vercel."
+    );
+  }
+
+  const safeUser = encodeUserInfoPartIfNeeded(rawUser);
+  const safePass = encodeUserInfoPartIfNeeded(rawPass);
+
+  return `${scheme}${safeUser}:${safePass}@${hostAndPath}`;
+}
+
+async function getMongoClient(): Promise<MongoClient> {
+  const uri = normalizeMongoUri(process.env.MONGODB_URI || "");
 
   if (!globalForMongo.__workestraMongoClientPromise) {
     try {
