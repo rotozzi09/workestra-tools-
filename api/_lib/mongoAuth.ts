@@ -42,7 +42,8 @@ function getJwtSecret(): string {
 }
 
 async function getMongoClient(): Promise<MongoClient> {
-  const uri = process.env.MONGODB_URI?.trim();
+  const rawUri = process.env.MONGODB_URI?.trim() || "";
+  const uri = rawUri.replace(/^["']|["']$/g, "").trim();
   if (!uri) {
     throw new MongoAuthServiceError(
       503,
@@ -54,23 +55,83 @@ async function getMongoClient(): Promise<MongoClient> {
   if (!uri.startsWith("mongodb://") && !uri.startsWith("mongodb+srv://")) {
     throw new MongoAuthServiceError(
       503,
-      "MONGODB_NOT_CONFIGURED",
-      "MONGODB_URI inválida."
+      "MONGODB_URI_INVALID",
+      "MONGODB_URI inválida (deve começar com mongodb+srv:// ou mongodb://)."
     );
   }
 
   if (!globalForMongo.__workestraMongoClientPromise) {
-    const client = new MongoClient(uri, {
-      maxPoolSize: 10,
-      serverSelectionTimeoutMS: 8000,
-    });
-    globalForMongo.__workestraMongoClientPromise = client.connect().catch((err) => {
+    try {
+      const client = new MongoClient(uri, {
+        maxPoolSize: 10,
+        serverSelectionTimeoutMS: 8000,
+      });
+      globalForMongo.__workestraMongoClientPromise = client.connect().catch((err) => {
+        globalForMongo.__workestraMongoClientPromise = undefined;
+        throw classifyMongoError(err);
+      });
+    } catch (err) {
       globalForMongo.__workestraMongoClientPromise = undefined;
-      throw err;
-    });
+      throw classifyMongoError(err);
+    }
   }
 
   return globalForMongo.__workestraMongoClientPromise;
+}
+
+function classifyMongoError(err: unknown): MongoAuthServiceError {
+  if (err instanceof MongoAuthServiceError) return err;
+  const msg = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : "";
+  const lower = msg.toLowerCase();
+
+  if (
+    name.includes("ParseError") ||
+    lower.includes("unescaped") ||
+    lower.includes("invalid connection string") ||
+    lower.includes("uri")
+  ) {
+    return new MongoAuthServiceError(
+      503,
+      "MONGODB_URI_INVALID",
+      "Formato da MONGODB_URI inválido (se a senha tiver símbolos como @ ou :, codifique ou use apenas letras/números)."
+    );
+  }
+
+  if (
+    lower.includes("bad auth") ||
+    lower.includes("authentication failed") ||
+    lower.includes("auth failed")
+  ) {
+    return new MongoAuthServiceError(
+      502,
+      "MONGODB_AUTH_FAILED",
+      "Usuário ou senha da MONGODB_URI incorretos no MongoDB Atlas."
+    );
+  }
+
+  if (
+    name.includes("ServerSelection") ||
+    name.includes("Network") ||
+    lower.includes("timed out") ||
+    lower.includes("etimedout") ||
+    lower.includes("enotfound") ||
+    lower.includes("econnrefused") ||
+    lower.includes("ssl") ||
+    lower.includes("tls")
+  ) {
+    return new MongoAuthServiceError(
+      502,
+      "MONGODB_NETWORK_ERROR",
+      "Não foi possível alcançar o MongoDB Atlas (verifique se 0.0.0.0/0 está liberado em Network Access)."
+    );
+  }
+
+  return new MongoAuthServiceError(
+    500,
+    "DB_ERROR",
+    `Erro ao consultar o banco de dados (${name || "MongoError"}).`
+  );
 }
 
 async function resolveDatabase(client: MongoClient): Promise<Db> {
@@ -83,20 +144,24 @@ async function resolveDatabase(client: MongoClient): Promise<Db> {
   // If URI did not specify a database name, MongoDB driver defaults to "test".
   // If "test" has no collections, inspect available databases and pick the app database.
   if (defaultDb.databaseName === "test") {
-    const collections = await defaultDb.listCollections({}, { nameOnly: true }).toArray();
-    if (collections.length === 0) {
-      const adminDb = client.db().admin();
-      const { databases } = await adminDb.listDatabases();
-      const candidate = databases.find(
-        (d) =>
-          d.name !== "admin" &&
-          d.name !== "local" &&
-          d.name !== "config" &&
-          d.name !== "test"
-      );
-      if (candidate) {
-        return client.db(candidate.name);
+    try {
+      const collections = await defaultDb.listCollections({}, { nameOnly: true }).toArray();
+      if (collections.length === 0) {
+        const adminDb = client.db().admin();
+        const { databases } = await adminDb.listDatabases();
+        const candidate = databases.find(
+          (d) =>
+            d.name !== "admin" &&
+            d.name !== "local" &&
+            d.name !== "config" &&
+            d.name !== "test"
+        );
+        if (candidate) {
+          return client.db(candidate.name);
+        }
       }
+    } catch {
+      // Ignore listDatabases permission error and keep default DB
     }
   }
 
@@ -219,7 +284,13 @@ async function verifyPasswordHash(plainPassword: string, storedHash: string): Pr
     storedHash.startsWith("$2b$") ||
     storedHash.startsWith("$2y$")
   ) {
-    return bcrypt.compare(plainPassword, storedHash);
+    const compareFn =
+      typeof bcrypt.compare === "function"
+        ? bcrypt.compare
+        : (bcrypt as unknown as { default?: typeof bcrypt }).default?.compare;
+    if (typeof compareFn === "function") {
+      return compareFn(plainPassword, storedHash);
+    }
   }
 
   // Node scrypt format "salt:derivedHex"

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useLanguage } from "../contexts/LanguageContext";
-import { WorkestraAuthError, WorkestraAuthErrorCode } from "../lib/workestraAuth";
+import { WorkestraAuthError } from "../lib/workestraAuth";
 import workestraLogo from "../assets/workestra-logo.png";
 import {
   Sparkles,
@@ -25,10 +25,10 @@ interface Props {
 }
 
 function getAuthErrorMessage(
-  code: WorkestraAuthErrorCode,
+  err: WorkestraAuthError,
   t: ReturnType<typeof useLanguage>["t"]
 ): string {
-  switch (code) {
+  switch (err.code) {
     case "INVALID_CREDENTIALS":
       return t("errInvalidCredentials");
     case "PREMIUM_REQUIRED":
@@ -37,11 +37,13 @@ function getAuthErrorMessage(
       return t("errInvalidToken");
     case "API_NOT_CONFIGURED":
     case "INVALID_API_URL":
-      return t("errApiNotConfigured");
+      return err.message && err.message !== err.code ? err.message : t("errApiNotConfigured");
     case "NETWORK_ERROR":
       return t("errNetwork");
     default:
-      return t("errUnknown");
+      return err.message && err.message !== err.code
+        ? `${t("errUnknown")} (${err.message})`
+        : t("errUnknown");
   }
 }
 
@@ -56,7 +58,7 @@ export function LoginScreen({ theme, onToggleTheme }: Props) {
 
   useEffect(() => {
     if (ssoError) {
-      setErrorMsg(getAuthErrorMessage(ssoError.code, t));
+      setErrorMsg(getAuthErrorMessage(ssoError, t));
     }
   }, [ssoError, t]);
 
@@ -70,7 +72,7 @@ export function LoginScreen({ theme, onToggleTheme }: Props) {
       await signInWithWorkestra(email, password);
     } catch (err) {
       if (err instanceof WorkestraAuthError) {
-        setErrorMsg(getAuthErrorMessage(err.code, t));
+        setErrorMsg(getAuthErrorMessage(err, t));
       } else {
         setErrorMsg(t("errUnknown"));
       }
