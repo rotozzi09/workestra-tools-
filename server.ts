@@ -22,13 +22,40 @@ async function startServer() {
   app.post("/api/tools/logout", (req, res) => void logoutHandler(req, res));
 
   if (!isProduction) {
+    const enableHmr = process.env.ENABLE_HMR === "true";
+    if (!enableHmr) {
+      process.env.DISABLE_HMR = "true";
+    }
+
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.ENABLE_HMR === "true" ? { server: httpServer } : false,
+        hmr: enableHmr ? { server: httpServer } : false,
+        ws: enableHmr ? { server: httpServer } : false,
       },
       appType: "spa",
     });
+
+    if (!enableHmr) {
+      app.get("/@vite/client", async (_req, res, next) => {
+        try {
+          const result = await vite.transformRequest("/@vite/client");
+          if (result?.code) {
+            const noWsCode = result.code.replace(
+              "transport.connect(createHMRHandler(handleMessage));",
+              "/* HMR WebSocket disabled */"
+            );
+            res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+            res.send(noWsCode);
+            return;
+          }
+        } catch {
+          // Fall back to Vite middleware if transform fails
+        }
+        next();
+      });
+    }
+
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), "dist");
