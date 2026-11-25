@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import { createServer as createHttpServer } from "node:http";
 import path from "node:path";
 import { createServer as createViteServer } from "vite";
 import loginHandler from "./api/tools/login";
@@ -11,6 +12,8 @@ const isProduction = process.env.NODE_ENV === "production";
 
 async function startServer() {
   const app = express();
+  const httpServer = createHttpServer(app);
+
   app.use(express.json({ limit: "32kb" }));
 
   // Workestra MongoDB Atlas Auth Routes
@@ -20,7 +23,10 @@ async function startServer() {
 
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === "true" ? false : { server: httpServer },
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -32,7 +38,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Workestra Tools server listening on http://0.0.0.0:${PORT}`);
   });
 }
